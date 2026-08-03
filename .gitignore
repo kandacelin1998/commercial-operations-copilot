@@ -1,0 +1,35 @@
+# Byte-compiled / cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE / editor
+.vscode/
+.idea/
+
+# Local environment / secrets
+.env
+
+# Distribution / build artifacts
+build/
+dist/
+*.egg-info/
+
+# Logs
+*.log
+
+# Uploaded/exported runtime files (not part of source control)
+*.csv
+!data/synthetic_operations_tracker.csv
