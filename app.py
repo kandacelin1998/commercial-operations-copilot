@@ -54,7 +54,7 @@ def load_csv_safely(file_or_path):
         return None, f"An unexpected error occurred while reading the file: {exc}"
 
     if df.empty:
-        return None, "This CSV has no rows. Please upload a file that contains account data."
+        return None, "This CSV has no rows. Please upload a file that contains publisher data."
 
     return df, None
 
@@ -109,11 +109,11 @@ def main():
     # ------------------------------------------------------------------
     st.subheader("1. KPI Dashboard")
     col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("Total Accounts", kpis["total_accounts"])
+    col1.metric("Total Publishers", kpis["total_publishers"])
     col2.metric("Approved", kpis["approved"])
     col3.metric("Pending Review", kpis["pending_review"])
     col4.metric("Revision Required", kpis["revision_required"])
-    col5.metric("High Risk", kpis["high_risk"])
+    col5.metric("Overdue", kpis["overdue"])
 
     st.divider()
 
@@ -121,23 +121,16 @@ def main():
     # 2. Action Queue
     # ------------------------------------------------------------------
     st.subheader("2. Action Queue")
-    st.caption("Accounts requiring attention, sorted with the highest risk first.")
+    st.caption("Publishers requiring attention, sorted with the highest priority first.")
 
     full_queue_df = build_action_queue(df)
 
     if full_queue_df.empty:
-        st.info("No accounts currently require follow-up.")
+        st.info("No publishers currently require follow-up.")
     else:
         queue_display_df = full_queue_df[
-            ["account_name", "next_action_owner", "risk_level", "recommended_next_action"]
-        ].rename(
-            columns={
-                "account_name": "Account",
-                "next_action_owner": "Owner",
-                "risk_level": "Risk",
-                "recommended_next_action": "Recommended Action",
-            }
-        )
+            ["Publisher", "Account Manager", "Priority", "Recommended Next Action"]
+        ].rename(columns={"Account Manager": "Owner", "Recommended Next Action": "Recommended Action"})
         st.dataframe(queue_display_df, use_container_width=True, hide_index=True)
 
         csv_buffer = io.StringIO()
@@ -164,7 +157,7 @@ def main():
     # 4. Full Tracker
     # ------------------------------------------------------------------
     st.subheader("4. Full Tracker")
-    st.caption("Complete account list with calculated status, risk, overdue, and follow-up fields.")
+    st.caption("Complete publisher list with calculated Overall Status, Days Overdue, and follow-up fields.")
     st.dataframe(df, use_container_width=True, hide_index=True)
 
 

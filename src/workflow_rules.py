@@ -1,21 +1,15 @@
 """
 Deterministic business rules for the Commercial Operations Copilot.
 
-This module is the single source of computational logic for the app.
-It implements the rules documented in docs/BUSINESS_RULES.md:
-    1. Overall status         -> sourced directly from the validated 'review_status' column
-    2. Risk level              -> compute_risk_level()
-    3. Follow-up required      -> compute_follow_up()
-    4. Days overdue            -> compute_days_overdue()
-    5. Recommended next action -> compute_next_action()
+This module implements the rule engine for the publisher-tracker schema:
+    Overall Status  -> compute_overall_status()   (7 categories)
+    Days Overdue     -> compute_days_overdue()
+    Follow-up needed -> compute_follow_up()
+    Recommended action -> compute_next_action()
 
 No AI model, external API, or probabilistic scoring is used anywhere
 in this module. Every output can be traced back to specific field values.
 All data processed by this module is expected to be synthetic and fictional.
-
-Functions imported by app.py (names must match exactly):
-    REQUIRED_COLUMNS, load_and_validate, apply_business_rules,
-    build_action_queue, compute_kpis, generate_executive_summary
 """
 
 from datetime import datetime
@@ -27,55 +21,48 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 
 REQUIRED_COLUMNS = [
-    "account_id",
-    "account_name",
-    "account_manager",
-    "priority",
-    "region",
-    "planning_period",
-    "plan_created",
-    "plan_sent",
-    "sent_date",
-    "plan_received",
-    "received_date",
-    "review_status",
-    "feedback_returned",
-    "feedback_returned_date",
-    "final_approval",
-    "approval_date",
-    "next_action",
-    "next_action_owner",
-    "due_date",
-    "blocker",
-    "last_updated",
-    "data_notice",
+    "Publisher",
+    "Account Manager",
+    "Priority",
+    "Calendar Period",
+    "Calendar Created?",
+    "Calendar Owner",
+    "Plan Ownership",
+    "Plan Sent?",
+    "Sent Date",
+    "Plan Received?",
+    "Received Date",
+    "Review Status",
+    "Feedback Returned Date",
+    "Uploaded to Tracking Tool?",
+    "Tracking Tool Upload Date",
+    "Tracking Tool Status",
+    "Blocker?",
+    "Due Date",
+    "Notes",
+    "Data Notice",
 ]
 
 DATE_COLUMNS = [
-    "plan_created",
-    "sent_date",
-    "received_date",
-    "feedback_returned_date",
-    "approval_date",
-    "due_date",
-    "last_updated",
+    "Sent Date",
+    "Received Date",
+    "Feedback Returned Date",
+    "Tracking Tool Upload Date",
+    "Due Date",
 ]
 
-YES_NO_COLUMNS = ["plan_sent", "plan_received", "feedback_returned", "final_approval", "blocker"]
+YES_NO_COLUMNS = ["Calendar Created?", "Uploaded to Tracking Tool?", "Blocker?"]
 
 VALID_PRIORITY = {"High", "Medium", "Low"}
-VALID_REVIEW_STATUS = {
-    "Not Started",
-    "Waiting for Response",
-    "Under Review",
-    "Revision Required",
-    "Approved",
-    "Blocked",
-}
+VALID_REVIEW_STATUS = {"Not Started", "Pending Review", "In Review", "Revision Requested", "Approved", "Blocked"}
+VALID_SENT = {"Sent", "Not Sent"}
+VALID_RECEIVED = {"Received", "Not Received"}
 
-RISK_ORDER = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
+PRIORITY_ORDER = {"High": 0, "Medium": 1, "Low": 2}
 
 DATA_NOTICE_TEXT = "Synthetic portfolio data - no real company information"
+
+COMPLETE_TOOL_STATUSES = {"live", "complete", "pushed"}
 
 
 # ---------------------------------------------------------------------------
@@ -98,12 +85,14 @@ def load_and_validate(df: pd.DataFrame):
     if missing_columns:
         return None, warnings, missing_columns
 
+    # Drop rows without a Publisher name — cannot be tracked meaningfully
     before_count = len(df)
-    df = df[df["account_id"].notna() & (df["account_id"].astype(str).str.strip() != "")]
+    df = df[df["Publisher"].notna() & (df["Publisher"].astype(str).str.strip() != "")]
     dropped = before_count - len(df)
     if dropped > 0:
-        warnings.append(f"Dropped {dropped} row(s) with a missing account_id.")
+        warnings.append(f"Dropped {dropped} row(s) with a missing Publisher name.")
 
+    # Coerce date columns
     invalid_date_total = 0
     for col in DATE_COLUMNS:
         original_non_null = df[col].notna().sum()
@@ -116,24 +105,30 @@ def load_and_validate(df: pd.DataFrame):
             "Expected format is YYYY-MM-DD."
         )
 
+    # Normalize simple Yes/No fields
     for col in YES_NO_COLUMNS:
         df[col] = df[col].apply(_normalize_yes_no)
 
-    invalid_priority = ~df["priority"].isin(VALID_PRIORITY)
+    # Normalize Plan Sent? / Plan Received?
+    df["Plan Sent?"] = df["Plan Sent?"].apply(lambda v: _normalize_choice(v, "Sent", "Not Sent"))
+    df["Plan Received?"] = df["Plan Received?"].apply(lambda v: _normalize_choice(v, "Received", "Not Received"))
+
+    # Normalize Priority
+    invalid_priority = ~df["Priority"].isin(VALID_PRIORITY)
     if invalid_priority.any():
         count = int(invalid_priority.sum())
-        warnings.append(f"{count} row(s) had an unrecognized priority value and were set to 'Unknown'.")
-        df.loc[invalid_priority, "priority"] = "Unknown"
+        warnings.append(f"{count} row(s) had an unrecognized Priority value and were set to 'Unknown'.")
+        df.loc[invalid_priority, "Priority"] = "Unknown"
 
-    invalid_status = ~df["review_status"].isin(VALID_REVIEW_STATUS)
+    # Normalize Review Status
+    invalid_status = ~df["Review Status"].isin(VALID_REVIEW_STATUS)
     if invalid_status.any():
         count = int(invalid_status.sum())
-        warnings.append(
-            f"{count} row(s) had an unrecognized review_status value and were set to 'Unknown'."
-        )
-        df.loc[invalid_status, "review_status"] = "Unknown"
+        warnings.append(f"{count} row(s) had an unrecognized Review Status value and were set to 'Unknown'.")
+        df.loc[invalid_status, "Review Status"] = "Unknown"
 
-    df["data_notice"] = DATA_NOTICE_TEXT
+    # Enforce the synthetic data notice regardless of source file content
+    df["Data Notice"] = DATA_NOTICE_TEXT
 
     return df, warnings, []
 
@@ -147,6 +142,15 @@ def _normalize_yes_no(value) -> str:
     return "No"
 
 
+def _normalize_choice(value, true_label: str, false_label: str) -> str:
+    if pd.isna(value):
+        return false_label
+    text = str(value).strip().lower()
+    if text == true_label.lower():
+        return true_label
+    return false_label
+
+
 # ---------------------------------------------------------------------------
 # Rule calculations (row-level helpers)
 # ---------------------------------------------------------------------------
@@ -157,61 +161,72 @@ def _days_since(date_value, today: pd.Timestamp):
     return (today - date_value).days
 
 
-def compute_days_overdue(row, today: pd.Timestamp) -> int:
-    """Rule 4: Days Overdue. See docs/BUSINESS_RULES.md Rules 4.1 and 4.2."""
-    due = row["due_date"]
+def compute_overall_status(row) -> str:
+    """
+    Overall Status (7 categories), computed from raw fields:
+        Not Started, Waiting for External Response, Internal Review,
+        Revision Required, Approved, Blocked, Complete
+    """
+    review_status = row["Review Status"]
+    plan_sent = row["Plan Sent?"]
+    plan_received = row["Plan Received?"]
+    blocker = row["Blocker?"]
+    tool_status = str(row["Tracking Tool Status"]).strip().lower() if pd.notna(row["Tracking Tool Status"]) else ""
+
+    # Complete: approved AND fully pushed to the tracking tool
+    if review_status == "Approved" and tool_status in COMPLETE_TOOL_STATUSES:
+        return "Complete"
+
+    # Blocked: an unresolved dependency overrides other states
+    if blocker == "Yes":
+        return "Blocked"
+
+    # Revision Required: plan was reviewed and sent back for changes
+    if review_status == "Revision Requested":
+        return "Revision Required"
+
+    # Waiting for External Response: sent to publisher, no reply yet
+    if plan_sent == "Sent" and plan_received == "Not Received":
+        return "Waiting for External Response"
+
+    # Internal Review: received and being reviewed internally
+    if plan_received == "Received" and review_status in ("Pending Review", "In Review"):
+        return "Internal Review"
+
+    # Approved (interim): approved but not yet pushed to the tool
+    if review_status == "Approved":
+        return "Approved"
+
+    # Fallback: nothing has been sent yet
+    return "Not Started"
+
+
+def compute_days_overdue(row, overall_status: str, today: pd.Timestamp) -> int:
+    """Days Overdue: 0 unless the due date has passed and the item isn't Complete."""
+    due = row["Due Date"]
     if pd.isna(due):
         return 0
-    if row["review_status"] == "Approved":
+    if overall_status == "Complete":
         return 0
     if due < today:
         return int((today - due).days)
     return 0
 
 
-def compute_risk_level(row, days_overdue: int, today: pd.Timestamp) -> str:
-    """Rule 2: Risk Level. See docs/BUSINESS_RULES.md Rules 2.1 - 2.4."""
-    status = row["review_status"]
-    priority = row["priority"]
-    due = row["due_date"]
-
-    if status == "Blocked" or days_overdue > 0:
-        return "Critical"
-
-    if status == "Revision Required":
-        days_since_review = _days_since(row["received_date"], today)
-        feedback_returned = row["feedback_returned"] == "Yes"
-        if not feedback_returned and days_since_review is not None and days_since_review > 5:
-            return "High"
-
-    if priority == "High" and pd.notna(due):
-        days_to_due = (due - today).days
-        if 0 <= days_to_due <= 5 and status != "Approved":
-            return "High"
-
-    if status == "Waiting for Response":
-        days_since_sent = _days_since(row["sent_date"], today)
-        if days_since_sent is not None and days_since_sent > 7:
-            return "Medium"
-
-    return "Low"
-
-
-def compute_follow_up(row, days_overdue: int, today: pd.Timestamp):
-    """Rule 3: Follow-up required. See docs/BUSINESS_RULES.md Rules 3.1 - 3.4."""
-    status = row["review_status"]
-
-    if status == "Blocked":
+def compute_follow_up(row, overall_status: str, days_overdue: int, today: pd.Timestamp):
+    """Follow-up required: Yes/No plus a short reason."""
+    if overall_status == "Blocked":
         return "Yes", "Unresolved blocker"
 
-    if status == "Waiting for Response":
-        days_since_sent = _days_since(row["sent_date"], today)
+    if overall_status == "Waiting for External Response":
+        days_since_sent = _days_since(row["Sent Date"], today)
         if days_since_sent is not None and days_since_sent > 7:
             return "Yes", "No response after 7 days"
 
-    if status == "Revision Required":
-        days_since_review = _days_since(row["received_date"], today)
-        if row["feedback_returned"] != "Yes" and days_since_review is not None and days_since_review > 5:
+    if overall_status == "Revision Required":
+        days_since_review = _days_since(row["Received Date"], today)
+        feedback_returned = pd.notna(row["Feedback Returned Date"])
+        if not feedback_returned and days_since_review is not None and days_since_review > 5:
             return "Yes", "Revision feedback overdue"
 
     if days_overdue > 0:
@@ -220,45 +235,48 @@ def compute_follow_up(row, days_overdue: int, today: pd.Timestamp):
     return "No", ""
 
 
-def compute_next_action(row, days_overdue: int, today: pd.Timestamp) -> str:
-    """Rule 5: Recommended Next Action. See docs/BUSINESS_RULES.md Rules 5.1 - 5.7."""
-    status = row["review_status"]
-    priority = row["priority"]
-    due = row["due_date"]
+def compute_next_action(row, overall_status: str, days_overdue: int, today: pd.Timestamp) -> str:
+    """Recommended next action, based on Overall Status, Priority, and due date."""
+    priority = row["Priority"]
+    due = row["Due Date"]
 
-    if status == "Blocked":
+    if overall_status == "Blocked":
         return "Escalate and resolve blocking dependency"
 
     if days_overdue > 0:
-        return "Escalate to account owner - due date passed"
+        return "Escalate to publisher contact - due date passed"
 
     if priority == "High" and pd.notna(due):
         days_to_due = (due - today).days
-        if 0 <= days_to_due <= 5 and status != "Approved":
+        if 0 <= days_to_due <= 5 and overall_status not in ("Approved", "Complete"):
             return "Expedite review - high-priority due date approaching"
 
-    if status == "Waiting for Response":
-        days_since_sent = _days_since(row["sent_date"], today)
+    if overall_status == "Waiting for External Response":
+        days_since_sent = _days_since(row["Sent Date"], today)
         if days_since_sent is not None and days_since_sent > 7:
-            return "Send follow-up reminder to account contact"
+            return "Send follow-up reminder to publisher contact"
         return "Monitor for response"
 
-    if status == "Revision Required":
-        days_since_review = _days_since(row["received_date"], today)
-        if row["feedback_returned"] != "Yes" and days_since_review is not None and days_since_review > 5:
+    if overall_status == "Revision Required":
+        days_since_review = _days_since(row["Received Date"], today)
+        feedback_returned = pd.notna(row["Feedback Returned Date"])
+        if not feedback_returned and days_since_review is not None and days_since_review > 5:
             return "Request updated feedback on revision"
         return "Continue internal review"
 
-    if status == "Under Review":
+    if overall_status == "Internal Review":
         return "Proceed with internal approval review"
 
-    if status == "Approved":
+    if overall_status == "Approved":
+        return "Upload to tracking tool and finalize"
+
+    if overall_status == "Complete":
         return "No action needed"
 
-    if status == "Not Started":
-        return "Initiate quarterly plan"
+    if overall_status == "Not Started":
+        return "Send calendar and initiate quarterly plan"
 
-    return "Review account manually"
+    return "Review publisher manually"
 
 
 # ---------------------------------------------------------------------------
@@ -269,37 +287,37 @@ def apply_business_rules(df: pd.DataFrame, today: pd.Timestamp = None) -> pd.Dat
     """
     Apply all deterministic rules to every row and return an enriched dataframe
     with the following added columns:
-        days_overdue, risk_level, follow_up_required, follow_up_reason,
-        recommended_next_action
+        Overall Status, Days Overdue, Follow-Up Required, Follow-Up Reason,
+        Recommended Next Action
     """
     if today is None:
         today = pd.Timestamp(datetime.today().date())
 
     df = df.copy()
 
+    overall_status_list = []
     days_overdue_list = []
-    risk_level_list = []
     follow_up_list = []
     follow_up_reason_list = []
     next_action_list = []
 
     for _, row in df.iterrows():
-        days_overdue = compute_days_overdue(row, today)
-        risk_level = compute_risk_level(row, days_overdue, today)
-        follow_up, reason = compute_follow_up(row, days_overdue, today)
-        next_action = compute_next_action(row, days_overdue, today)
+        overall_status = compute_overall_status(row)
+        days_overdue = compute_days_overdue(row, overall_status, today)
+        follow_up, reason = compute_follow_up(row, overall_status, days_overdue, today)
+        next_action = compute_next_action(row, overall_status, days_overdue, today)
 
+        overall_status_list.append(overall_status)
         days_overdue_list.append(days_overdue)
-        risk_level_list.append(risk_level)
         follow_up_list.append(follow_up)
         follow_up_reason_list.append(reason)
         next_action_list.append(next_action)
 
-    df["days_overdue"] = days_overdue_list
-    df["risk_level"] = risk_level_list
-    df["follow_up_required"] = follow_up_list
-    df["follow_up_reason"] = follow_up_reason_list
-    df["recommended_next_action"] = next_action_list
+    df["Overall Status"] = overall_status_list
+    df["Days Overdue"] = days_overdue_list
+    df["Follow-Up Required"] = follow_up_list
+    df["Follow-Up Reason"] = follow_up_reason_list
+    df["Recommended Next Action"] = next_action_list
 
     return df
 
@@ -309,61 +327,58 @@ def apply_business_rules(df: pd.DataFrame, today: pd.Timestamp = None) -> pd.Dat
 # ---------------------------------------------------------------------------
 
 def compute_kpis(df: pd.DataFrame) -> dict:
-    """Return the five headline KPIs used on the dashboard."""
+    """
+    Return the five headline KPIs used on the dashboard.
+    'Overdue' replaces the previous 'High Risk' metric now that risk
+    level is no longer tracked.
+    """
     total = len(df)
-    approved = int((df["review_status"] == "Approved").sum())
+    approved = int(df["Overall Status"].isin(["Approved", "Complete"]).sum())
     pending_review = int(
-        df["review_status"].isin(["Not Started", "Waiting for Response", "Under Review"]).sum()
+        df["Overall Status"].isin(["Not Started", "Waiting for External Response", "Internal Review"]).sum()
     )
-    revision_required = int((df["review_status"] == "Revision Required").sum())
-    high_risk = int(df["risk_level"].isin(["High", "Critical"]).sum())
+    revision_required = int((df["Overall Status"] == "Revision Required").sum())
+    overdue = int((df["Days Overdue"] > 0).sum())
 
     return {
-        "total_accounts": total,
+        "total_publishers": total,
         "approved": approved,
         "pending_review": pending_review,
         "revision_required": revision_required,
-        "high_risk": high_risk,
+        "overdue": overdue,
     }
 
 
 def build_action_queue(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Build a prioritized action queue containing accounts that require
-    follow-up or carry High/Critical risk, sorted by:
-        1. Risk level (Critical > High > Medium > Low)
-        2. Days overdue (descending)
-        3. Due date (ascending, soonest first)
+    Build a prioritized action queue containing publishers that require
+    follow-up, sorted by:
+        1. Priority (High > Medium > Low)
+        2. Days Overdue (descending)
+        3. Due Date (ascending, soonest first)
     """
-    queue = df[
-        (df["follow_up_required"] == "Yes") | (df["risk_level"].isin(["Critical", "High"]))
-    ].copy()
+    queue = df[df["Follow-Up Required"] == "Yes"].copy()
 
     if queue.empty:
         return queue
 
-    queue["_risk_rank"] = queue["risk_level"].map(RISK_ORDER).fillna(99)
+    queue["_priority_rank"] = queue["Priority"].map(PRIORITY_ORDER).fillna(99)
     queue = queue.sort_values(
-        by=["_risk_rank", "days_overdue", "due_date"],
+        by=["_priority_rank", "Days Overdue", "Due Date"],
         ascending=[True, False, True],
     )
-    queue = queue.drop(columns=["_risk_rank"])
+    queue = queue.drop(columns=["_priority_rank"])
 
     display_cols = [
-        "account_id",
-        "account_name",
-        "account_manager",
-        "priority",
-        "region",
-        "review_status",
-        "risk_level",
-        "days_overdue",
-        "follow_up_required",
-        "follow_up_reason",
-        "recommended_next_action",
-        "next_action_owner",
-        "due_date",
-        "data_notice",
+        "Publisher",
+        "Account Manager",
+        "Priority",
+        "Overall Status",
+        "Days Overdue",
+        "Follow-Up Reason",
+        "Recommended Next Action",
+        "Due Date",
+        "Data Notice",
     ]
     display_cols = [c for c in display_cols if c in queue.columns]
     return queue[display_cols].reset_index(drop=True)
@@ -374,31 +389,28 @@ def generate_executive_summary(df: pd.DataFrame, kpis: dict) -> str:
     Generate a concise, factual executive summary built entirely from
     counted values in the dataset. No AI model or external API is used.
     """
-    total = kpis["total_accounts"]
+    total = kpis["total_publishers"]
     approved = kpis["approved"]
     pending = kpis["pending_review"]
     revision = kpis["revision_required"]
+    overdue = kpis["overdue"]
 
-    blocked = int((df["review_status"] == "Blocked").sum())
-    critical = int((df["risk_level"] == "Critical").sum())
-    high = int((df["risk_level"] == "High").sum())
-    medium = int((df["risk_level"] == "Medium").sum())
-    low = int((df["risk_level"] == "Low").sum())
-    overdue = int((df["days_overdue"] > 0).sum())
-    follow_up = int((df["follow_up_required"] == "Yes").sum())
+    blocked = int((df["Overall Status"] == "Blocked").sum())
+    complete = int((df["Overall Status"] == "Complete").sum())
+    follow_up = int((df["Follow-Up Required"] == "Yes").sum())
 
     lines = [
         "SYNTHETIC DATA — for demonstration purposes only.",
         "",
-        f"Portfolio: {total} account(s) this planning period — "
-        f"{approved} Approved, {pending} Pending Review, {revision} Revision Required, {blocked} Blocked.",
-        f"Risk: {critical} Critical, {high} High, {medium} Medium, {low} Low.",
-        f"{overdue} account(s) are past due. {follow_up} account(s) require follow-up.",
+        f"Portfolio: {total} publisher(s) this planning period — "
+        f"{approved} Approved ({complete} fully Complete), {pending} Pending Review, "
+        f"{revision} Revision Required, {blocked} Blocked.",
+        f"{overdue} publisher(s) are past their due date. {follow_up} publisher(s) require follow-up.",
     ]
 
-    if critical > 0:
-        lines.append(f"Priority: address the {critical} Critical-risk account(s) first.")
+    if overdue > 0:
+        lines.append(f"Priority: address the {overdue} overdue publisher(s) first.")
     elif follow_up == 0:
-        lines.append("No accounts currently require follow-up action.")
+        lines.append("No publishers currently require follow-up action.")
 
     return "\n".join(lines)
