@@ -3,7 +3,7 @@ An AI-assisted workflow and risk management prototype for quarterly commercial o
 ## Screenshots
 
 ### KPI Dashboard
-![Dashboard Overview](dashboard-overview.png.jpeg)
+![Dashboard Overview](dashboard-overview.jpeg)
 
 ### Action Queue
 ![Action Queue](action%20queue.jpeg)
