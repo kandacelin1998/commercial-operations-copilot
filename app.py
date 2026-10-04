@@ -1,164 +1,156 @@
-"""
-Commercial Operations Copilot
-Streamlit application entry point.
-
-This application is a portfolio project. All account data displayed,
-uploaded, or bundled with this repository is SYNTHETIC AND FICTIONAL.
-No real companies, employees, or business relationships are represented.
-
-Business logic is fully deterministic and defined in docs/BUSINESS_RULES.md.
-No external AI API is used anywhere in this application.
-
-Page layout (top to bottom):
-    1. KPI Dashboard
-    2. Action Queue
-    3. Executive Summary
-    4. Full Tracker
-"""
-
-import io
+import os
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-from src.workflow_rules import (
-    REQUIRED_COLUMNS,
-    load_and_validate,
-    apply_business_rules,
-    build_action_queue,
-    compute_kpis,
-    generate_executive_summary,
-)
+from src.agents import run_merchandising_panel
+from src.merchandising import build_decision_queue, calculate_product_metrics
+from src.simulator import recommend_collection_actions
 
-DEFAULT_DATA_PATH = Path("data/synthetic_operations_tracker.csv")
+
+PRODUCTS_PATH = Path("data/fashion/fashion_products.csv")
+PROPOSED_COLLECTION_PATH = Path("data/fashion/proposed_collection.csv")
 
 st.set_page_config(
-    page_title="Commercial Operations Copilot",
-    page_icon="📋",
+    page_title="Merchandising Decision Lab",
+    page_icon="🧠",
     layout="wide",
 )
 
 
-def load_csv_safely(file_or_path):
-    """Read a CSV (path or uploaded file object). Returns (df, error_message)."""
-    try:
-        df = pd.read_csv(file_or_path)
-    except pd.errors.EmptyDataError:
-        return None, "This file is empty. Please upload a CSV that contains data."
-    except pd.errors.ParserError:
-        return None, "This file could not be read as a CSV. Please check the file format."
-    except UnicodeDecodeError:
-        return None, "This file uses an unsupported text encoding. Please upload a UTF-8 CSV."
-    except Exception as exc:  # noqa: BLE001
-        return None, f"An unexpected error occurred while reading the file: {exc}"
-
-    if df.empty:
-        return None, "This CSV has no rows. Please upload a file that contains publisher data."
-
-    return df, None
+@st.cache_data
+def load_product_data() -> pd.DataFrame:
+    return pd.read_csv(PRODUCTS_PATH)
 
 
-def main():
-    st.title("📋 Commercial Operations Copilot")
-    st.caption(
-        "⚠️ All data shown in this application is synthetic and fictional, "
-        "generated for demonstration purposes only. No real companies, "
-        "employees, or business relationships are represented."
-    )
+@st.cache_data
+def load_collection_data() -> pd.DataFrame:
+    return pd.read_csv(PROPOSED_COLLECTION_PATH)
 
-    uploaded_file = st.file_uploader(
-        "Upload a synthetic CSV tracker (optional — the bundled sample loads by default)",
-        type=["csv"],
-    )
 
-    if uploaded_file is not None:
-        df, error = load_csv_safely(uploaded_file)
-        source_label = f"Uploaded file: {uploaded_file.name}"
-    else:
-        if not DEFAULT_DATA_PATH.exists():
-            st.error(f"Default dataset not found at `{DEFAULT_DATA_PATH}`. Please upload a CSV to continue.")
-            return
-        df, error = load_csv_safely(DEFAULT_DATA_PATH)
-        source_label = f"Default dataset: {DEFAULT_DATA_PATH}"
-
-    if error:
-        st.error(error)
+def render_final_decision(decision: dict):
+    if not decision:
+        st.info("AI final decision is not available yet.")
         return
 
-    df, warnings, missing_columns = load_and_validate(df)
+    st.markdown("### Final Merchandising Decision")
+    st.write(f"Product: {decision.get('PRODUCT', 'n/a')}")
+    st.write(f"Action: {decision.get('ACTION', 'n/a')}")
+    st.write(f"Why: {decision.get('WHY', 'n/a')}")
+    st.write(f"Agent Debate: {decision.get('AGENT DEBATE', 'n/a')}")
+    st.write(f"Confidence: {decision.get('CONFIDENCE', 'n/a')}")
+    st.write(f"Risk: {decision.get('RISK', 'n/a')}")
 
-    if missing_columns:
-        st.error("This CSV is missing required column(s): " + ", ".join(missing_columns))
-        with st.expander("Required columns"):
-            st.code(", ".join(REQUIRED_COLUMNS), language=None)
-        return
 
-    st.success(f"Loaded {len(df)} row(s) — {source_label}")
+def main() -> None:
+    st.title("🧠 Merchandising Decision Lab")
+    st.caption("AI commercial decision system for fashion merchandising")
 
-    if warnings:
-        with st.expander(f"⚠️ {len(warnings)} data quality warning(s)"):
-            for w in warnings:
-                st.warning(w)
+    if not os.getenv("OPENAI_API_KEY"):
+        st.warning(
+            "Deterministic simulator works without an API key. The AI panel requires OPENAI_API_KEY before specialist analysis can run."
+        )
 
-    df = apply_business_rules(df)
-    kpis = compute_kpis(df)
+    product_df = load_product_data()
+    collection_df = load_collection_data()
+    product_metrics = calculate_product_metrics(product_df)
 
-    # ------------------------------------------------------------------
-    # 1. KPI Dashboard
-    # ------------------------------------------------------------------
-    st.subheader("1. KPI Dashboard")
-    col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("Total Publishers", kpis["total_publishers"])
-    col2.metric("Approved", kpis["approved"])
-    col3.metric("Pending Review", kpis["pending_review"])
-    col4.metric("Revision Required", kpis["revision_required"])
-    col5.metric("Overdue", kpis["overdue"])
+    st.subheader("1. Commercial Overview")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Products", len(product_metrics))
+    col2.metric("Inventory Value", f"£{product_metrics['inventory_value'].sum():,.0f}")
+    col3.metric("Average Margin", f"{product_metrics['margin_pct'].mean():.1f}%")
+    col4.metric("Average Sell-through", f"{product_metrics['sell_through_pct'].mean():.1f}%")
 
     st.divider()
 
-    # ------------------------------------------------------------------
-    # 2. Action Queue
-    # ------------------------------------------------------------------
-    st.subheader("2. Action Queue")
-    st.caption("Publishers requiring attention, sorted with the highest priority first.")
+    st.subheader("2. Today's Commercial Decisions")
+    decisions = build_decision_queue(product_metrics, top_n=5)
+    decisions_display = decisions[
+        ["sku", "product_name", "action", "sell_through_pct", "weeks_of_cover", "margin_pct", "inventory_value"]
+    ].rename(
+        columns={
+            "sku": "SKU",
+            "product_name": "Product",
+            "action": "Action",
+            "sell_through_pct": "Sell-through",
+            "weeks_of_cover": "Weeks of Cover",
+            "margin_pct": "Margin",
+            "inventory_value": "Inventory Value",
+        }
+    )
+    st.dataframe(decisions_display, use_container_width=True, hide_index=True)
 
-    full_queue_df = build_action_queue(df)
+    st.divider()
 
-    if full_queue_df.empty:
-        st.info("No publishers currently require follow-up.")
-    else:
-        queue_display_df = full_queue_df[
-            ["Publisher", "Account Manager", "Priority", "Recommended Next Action"]
-        ].rename(columns={"Account Manager": "Owner", "Recommended Next Action": "Recommended Action"})
-        st.dataframe(queue_display_df, use_container_width=True, hide_index=True)
+    st.subheader("3. Collection Simulator")
+    budget = st.slider("Collection Budget", min_value=300000, max_value=700000, value=500000, step=25000)
+    target_margin = st.slider("Target Gross Margin", min_value=50, max_value=75, value=68, step=1)
 
-        csv_buffer = io.StringIO()
-        queue_display_df.to_csv(csv_buffer, index=False)
-        st.download_button(
-            "⬇️ Download Action Queue as CSV",
-            data=csv_buffer.getvalue(),
-            file_name="action_queue.csv",
-            mime="text/csv",
+    collection_result = recommend_collection_actions(collection_df, budget, target_margin)
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Collection Investment", f"£{collection_result['investment']:,.0f}")
+    col2.metric("Budget", f"£{collection_result['budget']:,.0f}")
+    col3.metric("Average Margin", f"{collection_result['average_margin']:.1f}%")
+    col4.metric("Budget Status", "Within Budget" if collection_result["within_budget"] else "Over Budget")
+
+    recommendations = pd.DataFrame(collection_result["recommendations"])
+    if not recommendations.empty:
+        st.dataframe(
+            recommendations[["sku", "product_name", "action", "margin_pct", "investment"]].rename(
+                columns={
+                    "sku": "SKU",
+                    "product_name": "Product",
+                    "action": "Recommendation",
+                    "margin_pct": "Margin%",
+                    "investment": "Investment",
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
         )
 
     st.divider()
 
-    # ------------------------------------------------------------------
-    # 3. Executive Summary
-    # ------------------------------------------------------------------
-    st.subheader("3. Executive Summary")
-    st.caption("Generated entirely from deterministic business rules. No AI model is used.")
-    st.text(generate_executive_summary(df, kpis))
+    st.subheader("4. AI Merchandising Panel")
+    st.caption(
+        "Demand, Inventory and Pricing agents analyse the commercial data independently. A Merchandising Director resolves the trade-offs."
+    )
+
+    if st.button("Run AI Merchandising Panel"):
+        if not os.getenv("OPENAI_API_KEY"):
+            st.warning(
+                "The deterministic simulator works without an API key. The AI panel requires OPENAI_API_KEY to call the OpenAI Responses API."
+            )
+        else:
+            result = run_merchandising_panel(product_metrics)
+            st.session_state["ai_results"] = result
+            st.success("AI panel completed.")
+
+    if "ai_results" in st.session_state:
+        result = st.session_state["ai_results"]
+        if result.get("status") == "ok":
+            render_final_decision(result.get("final_decision", {}))
+
+            for label in ["Demand Analyst", "Inventory Analyst", "Pricing Analyst"]:
+                with st.expander(label):
+                    key = label.lower().replace(" ", "_")
+                    payload = result.get(f"{key}", {})
+                    st.write(payload.get("agent", label))
+                    st.write(f"Recommendation: {payload.get('recommendation', 'n/a')}")
+                    st.write(f"Evidence: {payload.get('evidence', 'n/a')}")
+                    st.write(f"Trade-offs: {payload.get('trade_offs', 'n/a')}")
+                    st.write(f"Summary: {payload.get('summary', 'n/a')}")
+        else:
+            st.warning(result.get("message", "AI panel unavailable."))
+    else:
+        st.info("The AI panel has not run yet. Use the button to generate the commercial recommendation.")
 
     st.divider()
 
-    # ------------------------------------------------------------------
-    # 4. Full Tracker
-    # ------------------------------------------------------------------
-    st.subheader("4. Full Tracker")
-    st.caption("Complete publisher list with calculated Overall Status, Days Overdue, and follow-up fields.")
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    with st.expander("Underlying Product Data"):
+        st.dataframe(product_metrics, use_container_width=True, hide_index=True)
 
 
 if __name__ == "__main__":

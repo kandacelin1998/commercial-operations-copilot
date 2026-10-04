@@ -33,3 +33,5 @@ dist/
 # Uploaded/exported runtime files (not part of source control)
 *.csv
 !data/synthetic_operations_tracker.csv
+!data/fashion/*.csv
+!data/fashion/
