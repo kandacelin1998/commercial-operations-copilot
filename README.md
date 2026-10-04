@@ -2,7 +2,7 @@
 
 [🚀 Live Demo](https://commercial-operations-copilot-26htkka7p9vmycaahbj3xm.streamlit.app/)
 
-Merchandising Decision Lab — an AI commercial decision system for fashion merchandising.ing.
+Merchandising Decision Lab - an AI commercial decision system for fashion merchandising.
 
 ## Problem
 
