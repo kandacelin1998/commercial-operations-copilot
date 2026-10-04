@@ -3,8 +3,9 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+from openai import OpenAIError
 
-from src.agents import run_merchandising_panel
+from src.agents import AgentError, run_merchandising_panel
 from src.merchandising import build_decision_queue, calculate_product_metrics
 from src.simulator import recommend_collection_actions
 
@@ -34,13 +35,35 @@ def render_final_decision(decision: dict):
         st.info("AI final decision is not available yet.")
         return
 
-    st.markdown("### Final Merchandising Decision")
-    st.write(f"Product: {decision.get('PRODUCT', 'n/a')}")
-    st.write(f"Action: {decision.get('ACTION', 'n/a')}")
-    st.write(f"Why: {decision.get('WHY', 'n/a')}")
-    st.write(f"Agent Debate: {decision.get('AGENT DEBATE', 'n/a')}")
-    st.write(f"Confidence: {decision.get('CONFIDENCE', 'n/a')}")
-    st.write(f"Risk: {decision.get('RISK', 'n/a')}")
+    with st.container(border=True):
+        st.subheader("Director decision")
+        st.metric("FINAL ACTION", decision["final_action"])
+        st.markdown(f"**PRODUCT**  \n{decision['sku']} — {decision['product_name']}")
+
+        why = decision["why"]
+        st.markdown(f"**WHY THIS ACTION WINS**  \n{why['explanation']}")
+        st.caption(
+            "Decision evidence: "
+            + ", ".join(f"{item['field']} = {item['value']:g}" for item in why["evidence"])
+        )
+
+        debate = decision["agent_debate"]
+        st.markdown("**AGENT DEBATE**")
+        for agent, recommendation in debate["recommendations"].items():
+            st.markdown(f"- {agent}: **{recommendation}**")
+        if debate["disagreement"]:
+            st.markdown(f"**Disagreement resolved:** {debate['resolution']}")
+        else:
+            st.markdown(f"**Resolution:** {debate['resolution']}")
+
+        confidence_col, risk_col = st.columns(2)
+        confidence_col.markdown(f"**CONFIDENCE**  \n{decision['confidence']}")
+        risk = decision["risk"]
+        risk_col.markdown(f"**RISK — {risk['level']}**  \n{risk['explanation']}")
+        st.caption(
+            "Risk evidence: "
+            + ", ".join(f"{item['field']} = {item['value']:g}" for item in risk["evidence"])
+        )
 
 
 def main() -> None:
@@ -49,7 +72,7 @@ def main() -> None:
 
     if not os.getenv("OPENAI_API_KEY"):
         st.warning(
-            "Deterministic simulator works without an API key. The AI panel requires OPENAI_API_KEY before specialist analysis can run."
+            "The deterministic simulator works without an API key. The AI Merchandising Panel requires OPENAI_API_KEY."
         )
 
     product_df = load_product_data()
@@ -80,7 +103,7 @@ def main() -> None:
             "inventory_value": "Inventory Value",
         }
     )
-    st.dataframe(decisions_display, use_container_width=True, hide_index=True)
+    st.dataframe(decisions_display, width="stretch", hide_index=True)
 
     st.divider()
 
@@ -107,7 +130,7 @@ def main() -> None:
                     "investment": "Investment",
                 }
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -117,31 +140,47 @@ def main() -> None:
     st.caption(
         "Demand, Inventory and Pricing agents analyse the commercial data independently. A Merchandising Director resolves the trade-offs."
     )
+    st.caption(
+        "Python calculates deterministic metrics; AI specialists interpret that evidence and the Director resolves their trade-offs."
+    )
 
     if st.button("Run AI Merchandising Panel"):
+        st.session_state.pop("ai_results", None)
         if not os.getenv("OPENAI_API_KEY"):
             st.warning(
-                "The deterministic simulator works without an API key. The AI panel requires OPENAI_API_KEY to call the OpenAI Responses API."
+                "The deterministic simulator works without an API key. The AI Merchandising Panel requires OPENAI_API_KEY."
             )
         else:
-            result = run_merchandising_panel(product_metrics)
-            st.session_state["ai_results"] = result
-            st.success("AI panel completed.")
+            try:
+                with st.spinner("Running three specialists and the Merchandising Director..."):
+                    result = run_merchandising_panel(product_metrics)
+            except (AgentError, OpenAIError) as error:
+                st.error(f"AI Merchandising Panel failed: {error}")
+            else:
+                st.session_state["ai_results"] = result
+                st.success("AI specialist analysis and Director decision completed.")
 
     if "ai_results" in st.session_state:
         result = st.session_state["ai_results"]
         if result.get("status") == "ok":
+            st.markdown("#### Director decision")
             render_final_decision(result.get("final_decision", {}))
 
+            st.markdown("#### AI specialist analysis")
             for label in ["Demand Analyst", "Inventory Analyst", "Pricing Analyst"]:
                 with st.expander(label):
                     key = label.lower().replace(" ", "_")
                     payload = result.get(f"{key}", {})
-                    st.write(payload.get("agent", label))
-                    st.write(f"Recommendation: {payload.get('recommendation', 'n/a')}")
-                    st.write(f"Evidence: {payload.get('evidence', 'n/a')}")
-                    st.write(f"Trade-offs: {payload.get('trade_offs', 'n/a')}")
-                    st.write(f"Summary: {payload.get('summary', 'n/a')}")
+                    st.markdown(f"**RECOMMENDATION:** {payload['recommendation']}")
+                    st.markdown(f"**PRODUCT:** {payload['sku']} — {payload['product_name']}")
+                    st.markdown(
+                        "**TOP EVIDENCE:** "
+                        + ", ".join(
+                            f"{item['field']} = {item['value']:g}" for item in payload["evidence"]
+                        )
+                    )
+                    st.markdown(f"**TRADE-OFF:** {payload['trade_off']}")
+                    st.markdown(f"**CONFIDENCE:** {payload['confidence']}")
         else:
             st.warning(result.get("message", "AI panel unavailable."))
     else:
@@ -150,7 +189,7 @@ def main() -> None:
     st.divider()
 
     with st.expander("Underlying Product Data"):
-        st.dataframe(product_metrics, use_container_width=True, hide_index=True)
+        st.dataframe(product_metrics, width="stretch", hide_index=True)
 
 
 if __name__ == "__main__":

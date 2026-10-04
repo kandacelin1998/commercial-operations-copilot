@@ -54,21 +54,28 @@ def recommend_collection_actions(collection: pd.DataFrame, budget: float, target
 
     within_budget = total_investment <= float(budget)
     over_budget = max(total_investment - float(budget), 0.0)
+    portfolio_status = (
+        "The portfolio is within budget."
+        if within_budget
+        else f"The portfolio remains £{over_budget:,.0f} over budget."
+    )
 
     recommendations = []
     for _, row in data.iterrows():
         if row["recommendation"] == "CUT":
             reason = (
-                f"The collection is over budget by £{over_budget:,.0f}; reducing {row['product_name']} cuts "
-                f"{row['investment']:,.0f} from the plan while preserving the margin target."
+                f"This product meets the {target_margin}% margin target and was selected for reduction because "
+                f"it represents {row['budget_pressure']}% of collection investment. {portfolio_status}"
             )
         elif row["recommendation"] == "REPRICE":
             reason = (
-                f"Margin {row['margin_pct']}% is below the {target_margin}% goal, so pricing should be reviewed before purchase."
+                f"Margin {row['margin_pct']}% is below the {target_margin}% goal, so pricing should be reviewed before purchase. "
+                f"{portfolio_status}"
             )
         else:
             reason = (
-                f"Margin {row['margin_pct']}% meets the target and the investment remains within the budget envelope."
+                f"Margin {row['margin_pct']}% meets the {target_margin}% target and this product does not meet the "
+                f"product-level cut threshold. {portfolio_status}"
             )
 
         recommendations.append(

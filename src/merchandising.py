@@ -80,38 +80,3 @@ def simulate_markdown(price: float, cost: float, units_available: int, markdown_
         "new_profit": round(new_profit, 2),
         "profit_change": round(new_profit - current_profit, 2),
     }
-
-
-def simulate_collection(collection: pd.DataFrame, budget: float, target_margin: float) -> dict:
-    """Simulate a proposed collection against a budget and target gross margin."""
-    data = collection.copy()
-
-    data["investment"] = data["unit_cost"] * data["proposed_units"]
-    data["revenue_potential"] = data["proposed_price"] * data["proposed_units"]
-    data["margin_pct"] = ((data["proposed_price"] - data["unit_cost"]) / data["proposed_price"] * 100).round(1)
-    total_investment = float(data["investment"].sum())
-    data["budget_pressure"] = (data["investment"] / total_investment * 100).round(1) if total_investment else 0.0
-
-    def collection_action(row):
-        if row["margin_pct"] < target_margin:
-            return "REPRICE"
-        if row["budget_pressure"] > 12:
-            return "REDUCE"
-        return "KEEP"
-
-    data["recommendation"] = data.apply(collection_action, axis=1)
-    average_margin = (
-        ((data["revenue_potential"].sum() - data["investment"].sum()) / data["revenue_potential"].sum()) * 100
-        if data["revenue_potential"].sum() > 0
-        else 0.0
-    )
-    over_budget = max(total_investment - budget, 0.0)
-
-    return {
-        "products": data,
-        "total_investment": round(total_investment, 2),
-        "budget": round(budget, 2),
-        "over_budget": round(over_budget, 2),
-        "average_margin": round(average_margin, 1),
-        "within_budget": total_investment <= budget,
-    }
