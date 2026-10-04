@@ -1,0 +1,21 @@
+sku,product_name,category,colour,price,cost,units_sold,units_available,return_rate,season
+SKU001,Satin Slip Dress,Dresses,Black,180,55,420,900,0.08,AW26
+SKU002,Oversized Blazer,Jackets,Black,260,85,380,500,0.05,AW26
+SKU003,Ribbed Knit Top,Knitwear,Cream,95,28,510,600,0.06,AW26
+SKU004,Wide Leg Trouser,Trousers,Grey,140,45,290,700,0.09,AW26
+SKU005,Leather Mini Bag,Bags,Brown,220,70,210,350,0.04,AW26
+SKU006,Mesh Long Sleeve,Layering,Black,85,24,620,500,0.11,AW26
+SKU007,Cashmere Cardigan,Knitwear,Red,240,90,180,400,0.07,AW26
+SKU008,Utility Cargo Trouser,Trousers,Khaki,160,52,330,450,0.06,AW26
+SKU009,Structured Mini Dress,Dresses,Red,195,62,260,650,0.10,AW26
+SKU010,Relaxed Wool Coat,Outerwear,Charcoal,390,140,140,300,0.05,AW26
+SKU011,Silk Cowl Top,Tops,Champagne,135,42,390,420,0.05,AW26
+SKU012,Denim Midi Skirt,Skirts,Indigo,125,40,270,650,0.08,AW26
+SKU013,Leather Bomber,Jackets,Brown,350,125,155,250,0.04,AW26
+SKU014,Fitted Rib Dress,Dresses,Chocolate,175,52,480,380,0.07,AW26
+SKU015,Relaxed Hoodie,Sweatshirts,Grey,110,35,520,750,0.12,AW26
+SKU016,Tailored Vest,Jackets,Black,155,48,310,400,0.06,AW26
+SKU017,Sequinned Mini Skirt,Skirts,Silver,145,45,120,600,0.15,AW26
+SKU018,Merino Crewneck,Knitwear,Navy,190,68,360,350,0.04,AW26
+SKU019,Leather Loafer,Shoes,Black,230,78,205,300,0.06,AW26
+SKU020,Long Satin Skirt,Skirts,Burgundy,165,50,430,420,0.08,AW26
