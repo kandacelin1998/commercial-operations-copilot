@@ -5,12 +5,14 @@ from typing import Any
 import pandas as pd
 
 
-def _decision_for_row(row: pd.Series, target_margin: float) -> str:
+def _decision_for_row(row: pd.Series, target_margin: float, budget: float, total_investment: float) -> str:
     margin = float(row.get("margin_pct", 0.0))
     budget_pressure = float(row.get("budget_pressure", 0.0))
+    investment = float(row.get("investment", 0.0))
+
     if margin < target_margin:
         return "REPRICE"
-    if budget_pressure > 12:
+    if total_investment > budget and (budget_pressure >= 8 or investment >= 0.08 * budget):
         return "CUT"
     return "KEEP"
 
@@ -32,9 +34,7 @@ def recommend_collection_actions(collection: pd.DataFrame, budget: float, target
     data = collection.copy()
     data["investment"] = data["unit_cost"] * data["proposed_units"]
     data["revenue_potential"] = data["proposed_price"] * data["proposed_units"]
-    data["margin_pct"] = (
-        ((data["proposed_price"] - data["unit_cost"]) / data["proposed_price"]) * 100
-    ).round(1)
+    data["margin_pct"] = (((data["proposed_price"] - data["unit_cost"]) / data["proposed_price"]) * 100).round(1)
 
     total_investment = float(data["investment"].sum())
     if total_investment > 0:
@@ -42,12 +42,13 @@ def recommend_collection_actions(collection: pd.DataFrame, budget: float, target
     else:
         data["budget_pressure"] = 0.0
 
-    data["recommendation"] = data.apply(lambda row: _decision_for_row(row, float(target_margin)), axis=1)
+    data["recommendation"] = data.apply(
+        lambda row: _decision_for_row(row, float(target_margin), float(budget), total_investment),
+        axis=1,
+    )
 
     if total_investment > 0:
-        average_margin = (
-            ((data["revenue_potential"].sum() - data["investment"].sum()) / data["revenue_potential"].sum()) * 100
-        )
+        average_margin = (((data["revenue_potential"].sum() - data["investment"].sum()) / data["revenue_potential"].sum()) * 100)
     else:
         average_margin = 0.0
 
@@ -56,10 +57,20 @@ def recommend_collection_actions(collection: pd.DataFrame, budget: float, target
 
     recommendations = []
     for _, row in data.iterrows():
-        reason = (
-            f"Margin {row['margin_pct']}% sits {'' if row['margin_pct'] >= target_margin else 'below'} the target range; "
-            f"investment is {row['budget_pressure']}% of the total collection."
-        )
+        if row["recommendation"] == "CUT":
+            reason = (
+                f"The collection is over budget by £{over_budget:,.0f}; reducing {row['product_name']} cuts "
+                f"{row['investment']:,.0f} from the plan while preserving the margin target."
+            )
+        elif row["recommendation"] == "REPRICE":
+            reason = (
+                f"Margin {row['margin_pct']}% is below the {target_margin}% goal, so pricing should be reviewed before purchase."
+            )
+        else:
+            reason = (
+                f"Margin {row['margin_pct']}% meets the target and the investment remains within the budget envelope."
+            )
+
         recommendations.append(
             {
                 "sku": row["sku"],
